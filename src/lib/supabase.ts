@@ -1,57 +1,79 @@
 import { createClient } from '@supabase/supabase-js';
-import type { SrsProduct } from '../types';
+import type { ZuperProduct, SrsProduct, MatchResult, MatchType } from '../types';
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL as string,
   import.meta.env.VITE_SUPABASE_KEY as string
 );
 
-const SELECT_FIELDS = 'product_id,product_name,product_category,manufacturer,manufacturer_norm,product_line,suggested_price,purchase_price';
-const PAGE_SIZE = 500;
-const CONCURRENCY = 2;
-const MAX_RETRIES = 3;
-
-async function fetchPage(i: number): Promise<SrsProduct[]> {
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    const { data, error } = await supabase
-      .from('srs_products')
-      .select(SELECT_FIELDS)
-      .range(i * PAGE_SIZE, (i + 1) * PAGE_SIZE - 1);
-
-    if (!error) return (data ?? []) as SrsProduct[];
-
-    if (attempt < MAX_RETRIES - 1) {
-      await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
-    } else {
-      throw new Error(`Page ${i} failed after ${MAX_RETRIES} attempts: ${error.message}`);
-    }
-  }
-  return [];
+function norm(s: string): string {
+  return s.toLowerCase().trim().replace(/\s+/g, ' ');
 }
 
-export async function fetchAllSrsProducts(
-  onProgress: (fetched: number, total: number) => void
-): Promise<SrsProduct[]> {
-  const { count } = await supabase
-    .from('srs_products')
-    .select(SELECT_FIELDS, { count: 'exact', head: true });
-
-  const total = count ?? 0;
-  const pages = Math.ceil(total / PAGE_SIZE);
-  const results: SrsProduct[][] = new Array(pages);
-  let fetched = 0;
-  let pageIdx = 0;
-
-  async function worker() {
-    while (pageIdx < pages) {
-      const i = pageIdx++;
-      results[i] = await fetchPage(i);
-      fetched += results[i].length;
-      onProgress(fetched, total);
-    }
+function stripBrandSuffix(name: string, brand: string): string {
+  if (!brand) return name;
+  const suffix = ` | ${brand}`;
+  if (name.endsWith(suffix)) return name.slice(0, -suffix.length).trim();
+  const parts = name.split(' | ');
+  if (parts.length > 1 && norm(parts[parts.length - 1]) === norm(brand)) {
+    return parts.slice(0, -1).join(' | ').trim();
   }
+  return name;
+}
 
-  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pages) }, worker));
+interface DbRow {
+  input_idx: number;
+  product_id: number;
+  product_name: string;
+  product_category: string;
+  manufacturer: string;
+  manufacturer_norm: string;
+  product_line: string | null;
+  product_description: string | null;
+  suggested_price: number | null;
+  purchase_price: number | null;
+  score: number;
+}
 
-  return results.flat();
+function rowToSrsProduct(row: DbRow): SrsProduct {
+  return {
+    product_id: row.product_id,
+    product_name: row.product_name,
+    product_category: row.product_category,
+    manufacturer: row.manufacturer,
+    manufacturer_norm: row.manufacturer_norm,
+    product_line: row.product_line,
+    product_description: row.product_description,
+    suggested_price: row.suggested_price,
+    purchase_price: row.purchase_price,
+  };
+}
+
+export async function matchProductsBatch(zuper: ZuperProduct[]): Promise<MatchResult[]> {
+  const names        = zuper.map(z => stripBrandSuffix(z.productName, z.brand));
+  const brands       = zuper.map(z => z.brand ?? '');
+  const descriptions = zuper.map(z => z.productDescription ?? '');
+
+  const { data, error } = await supabase.rpc('match_srs_products_batch', {
+    p_names:        names,
+    p_brands:       brands,
+    p_descriptions: descriptions,
+  });
+
+  if (error) throw new Error(`RPC failed: ${error.message}`);
+
+  const byIdx = new Map<number, DbRow>(
+    (data as DbRow[]).map(r => [r.input_idx - 1, r])  // WITH ORDINALITY is 1-based
+  );
+
+  return zuper.map((z, i) => {
+    const row = byIdx.get(i);
+    if (!row || row.score < 0.30) {
+      return { zuper: z, srs: null, matchType: 'no_match', score: 0 };
+    }
+    const matchType: MatchType =
+      row.score >= 0.90 ? 'exact' :
+      row.score >= 0.52 ? 'fuzzy' : 'partial';
+    return { zuper: z, srs: rowToSrsProduct(row), matchType, score: row.score };
+  });
 }

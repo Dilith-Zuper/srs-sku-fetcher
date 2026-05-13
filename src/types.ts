@@ -17,6 +17,7 @@ export interface SrsProduct {
   manufacturer: string;
   manufacturer_norm: string;
   product_line: string | null;
+  product_description: string | null;
   suggested_price: number | null;
   purchase_price: number | null;
 }

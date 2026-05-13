@@ -11,7 +11,6 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.37.0",
     "@supabase/supabase-js": "^2.103.3",
-    "fuse.js": "^7.0.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "xlsx": "^0.18.5"
