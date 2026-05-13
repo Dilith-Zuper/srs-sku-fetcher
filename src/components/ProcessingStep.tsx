@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ZuperProduct, SrsProduct, MatchResult } from '../types';
 import { fetchAllSrsProducts } from '../lib/supabase';
 import { matchAll } from '../lib/matcher';
+import { verifyMatches } from '../lib/verifier';
 
 interface ProcessingStepProps {
   products: ZuperProduct[];
@@ -14,10 +15,13 @@ interface LogLine {
   type: 'info' | 'success' | 'error';
 }
 
+type Phase = 'catalog' | 'matching' | 'verifying' | 'done';
+
 export default function ProcessingStep({ products, onDone, onError }: ProcessingStepProps) {
-  const [phase, setPhase] = useState<'catalog' | 'matching' | 'done'>('catalog');
+  const [phase, setPhase] = useState<Phase>('catalog');
   const [catalogProgress, setCatalogProgress] = useState({ fetched: 0, total: 0 });
   const [matchProgress, setMatchProgress] = useState({ done: 0, total: products.length });
+  const [verifyProgress, setVerifyProgress] = useState({ done: 0, total: 0 });
   const [log, setLog] = useState<LogLine[]>([{ text: 'Connecting to SRS catalog…', type: 'info' }]);
   const logRef = useRef<HTMLDivElement>(null);
   const ran = useRef(false);
@@ -39,24 +43,39 @@ export default function ProcessingStep({ products, onDone, onError }: Processing
           }
         });
 
-        addLog(`Starting match for ${products.length} Zuper products…`, 'info');
+        addLog(`Starting fuzzy match for ${products.length} products…`, 'info');
         setPhase('matching');
 
-        const results = await matchAll(products, srsProducts, (done, total) => {
+        let matched = await matchAll(products, srsProducts, (done, total) => {
           setMatchProgress({ done, total });
         });
 
-        const exact = results.filter((r) => r.matchType === 'exact').length;
-        const fuzzy = results.filter((r) => r.matchType === 'fuzzy').length;
-        const partial = results.filter((r) => r.matchType === 'partial').length;
-        const none = results.filter((r) => r.matchType === 'no_match').length;
+        const fuzzyCount = matched.filter((r) => r.matchType === 'fuzzy').length;
+        const partialCount = matched.filter((r) => r.matchType === 'partial').length;
+        const toVerify = fuzzyCount + partialCount;
+        addLog(`Fuzzy matching done — ${toVerify} matches queued for AI verification`, 'success');
+
+        setPhase('verifying');
+        setVerifyProgress({ done: 0, total: toVerify });
+        addLog(`Sending ${toVerify} matches to Claude for verification…`, 'info');
+
+        matched = await verifyMatches(matched, (done, total) => {
+          setVerifyProgress({ done, total });
+        });
+
+        const exact = matched.filter((r) => r.matchType === 'exact').length;
+        const fuzzy = matched.filter((r) => r.matchType === 'fuzzy').length;
+        const partial = matched.filter((r) => r.matchType === 'partial').length;
+        const none = matched.filter((r) => r.matchType === 'no_match').length;
+        const confirmed = matched.filter((r) => r.aiVerdict === 'confirmed').length;
+        const rejected = matched.filter((r) => r.aiVerdict === 'rejected').length;
 
         addLog(
-          `Done — ${exact} exact, ${fuzzy} fuzzy, ${partial} partial, ${none} unmatched`,
+          `AI done — ${confirmed} confirmed, ${rejected} rejected. Final: ${exact} exact, ${fuzzy} fuzzy, ${partial} partial, ${none} unmatched`,
           'success'
         );
         setPhase('done');
-        setTimeout(() => onDone(results), 600);
+        setTimeout(() => onDone(matched), 600);
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Unknown error';
         addLog(`Error: ${msg}`, 'error');
@@ -72,11 +91,16 @@ export default function ProcessingStep({ products, onDone, onError }: Processing
   const totalProgress = (() => {
     if (phase === 'catalog') {
       return catalogProgress.total > 0
-        ? Math.round((catalogProgress.fetched / catalogProgress.total) * 50)
+        ? Math.round((catalogProgress.fetched / catalogProgress.total) * 40)
         : 2;
     }
     if (phase === 'matching') {
-      return 50 + Math.round((matchProgress.done / matchProgress.total) * 50);
+      return 40 + Math.round((matchProgress.done / matchProgress.total) * 30);
+    }
+    if (phase === 'verifying') {
+      return 70 + (verifyProgress.total > 0
+        ? Math.round((verifyProgress.done / verifyProgress.total) * 30)
+        : 0);
     }
     return 100;
   })();
@@ -88,14 +112,51 @@ export default function ProcessingStep({ products, onDone, onError }: Processing
       </svg>
     </span>
   );
-
   const SpinIcon = () => (
     <span className="w-5 h-5 rounded-full border-2 border-orange-500 border-t-transparent animate-spin shrink-0" />
   );
-
   const PendingIcon = () => (
     <span className="w-5 h-5 rounded-full border-2 border-gray-200 shrink-0" />
   );
+
+  const phaseStatus = (p: Phase) => {
+    const order: Phase[] = ['catalog', 'matching', 'verifying', 'done'];
+    const cur = order.indexOf(phase);
+    const tgt = order.indexOf(p);
+    if (tgt < cur) return 'done';
+    if (tgt === cur) return 'active';
+    return 'pending';
+  };
+
+  const phases: { key: Phase; label: string; detail: string }[] = [
+    {
+      key: 'catalog',
+      label: 'Load SRS catalog',
+      detail: catalogProgress.total > 0
+        ? `${catalogProgress.fetched.toLocaleString()} / ${catalogProgress.total.toLocaleString()} products`
+        : 'Connecting…',
+    },
+    {
+      key: 'matching',
+      label: 'Fuzzy matching',
+      detail: phase === 'matching'
+        ? `${matchProgress.done.toLocaleString()} / ${matchProgress.total.toLocaleString()} products`
+        : phaseStatus('matching') === 'done'
+        ? `${products.length.toLocaleString()} products matched`
+        : 'Waiting…',
+    },
+    {
+      key: 'verifying',
+      label: 'AI verification',
+      detail: phase === 'verifying'
+        ? verifyProgress.total > 0
+          ? `${verifyProgress.done.toLocaleString()} / ${verifyProgress.total.toLocaleString()} matches`
+          : 'Starting…'
+        : phaseStatus('verifying') === 'done'
+        ? `${verifyProgress.total.toLocaleString()} matches verified`
+        : 'Waiting…',
+    },
+  ];
 
   return (
     <div className="space-y-8">
@@ -107,8 +168,9 @@ export default function ProcessingStep({ products, onDone, onError }: Processing
           Matching your products
         </h1>
         <p className="text-sm text-gray-500 leading-relaxed mt-2">
-          {phase === 'catalog' && 'Fetching the SRS catalog from the database…'}
+          {phase === 'catalog' && 'Fetching the SRS catalog in parallel…'}
           {phase === 'matching' && `Running fuzzy match on ${products.length.toLocaleString()} products…`}
+          {phase === 'verifying' && 'Claude is verifying ambiguous matches…'}
           {phase === 'done' && 'All done! Loading results…'}
         </p>
       </div>
@@ -129,56 +191,30 @@ export default function ProcessingStep({ products, onDone, onError }: Processing
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
-          <div
-            className={`rounded-xl border p-4 transition-all ${
-              phase === 'catalog'
-                ? 'border-l-[3px] border-l-orange-400 border-[#E5E2DC]'
-                : 'border-[#E5E2DC]'
-            }`}
-          >
-            <div className="flex items-center gap-3">
-              {phase === 'catalog' ? <SpinIcon /> : <CheckIcon />}
-              <div>
-                <p className="text-sm font-semibold text-[#1A1A1A]">Load SRS catalog</p>
-                <p className="text-xs text-gray-400">
-                  {catalogProgress.total > 0
-                    ? `${catalogProgress.fetched.toLocaleString()} / ${catalogProgress.total.toLocaleString()} products`
-                    : 'Connecting…'}
-                </p>
+        <div className="grid grid-cols-3 gap-3">
+          {phases.map(({ key, label, detail }) => {
+            const status = phaseStatus(key);
+            return (
+              <div
+                key={key}
+                className={`rounded-xl border p-4 transition-all ${
+                  status === 'active'
+                    ? 'border-l-[3px] border-l-orange-400 border-[#E5E2DC]'
+                    : status === 'pending'
+                    ? 'border-[#E5E2DC] opacity-40'
+                    : 'border-[#E5E2DC]'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  {status === 'active' ? <SpinIcon /> : status === 'done' ? <CheckIcon /> : <PendingIcon />}
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-[#1A1A1A] truncate">{label}</p>
+                    <p className="text-xs text-gray-400 truncate">{detail}</p>
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
-
-          <div
-            className={`rounded-xl border p-4 transition-all ${
-              phase === 'matching'
-                ? 'border-l-[3px] border-l-orange-400 border-[#E5E2DC]'
-                : phase === 'done'
-                ? 'border-[#E5E2DC]'
-                : 'border-[#E5E2DC] opacity-40'
-            }`}
-          >
-            <div className="flex items-center gap-3">
-              {phase === 'matching' ? (
-                <SpinIcon />
-              ) : phase === 'done' ? (
-                <CheckIcon />
-              ) : (
-                <PendingIcon />
-              )}
-              <div>
-                <p className="text-sm font-semibold text-[#1A1A1A]">Run matching</p>
-                <p className="text-xs text-gray-400">
-                  {phase === 'matching'
-                    ? `${matchProgress.done.toLocaleString()} / ${matchProgress.total.toLocaleString()} products`
-                    : phase === 'done'
-                    ? `${products.length.toLocaleString()} products matched`
-                    : 'Waiting…'}
-                </p>
-              </div>
-            </div>
-          </div>
+            );
+          })}
         </div>
 
         <div
@@ -189,11 +225,7 @@ export default function ProcessingStep({ products, onDone, onError }: Processing
             <div
               key={i}
               className={
-                l.type === 'success'
-                  ? 'text-orange-400'
-                  : l.type === 'error'
-                  ? 'text-red-400'
-                  : 'text-gray-500'
+                l.type === 'success' ? 'text-orange-400' : l.type === 'error' ? 'text-red-400' : 'text-gray-500'
               }
             >
               {l.type === 'success' ? '✓ ' : l.type === 'error' ? '✗ ' : '  '}

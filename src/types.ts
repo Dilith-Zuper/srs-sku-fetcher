@@ -22,10 +22,13 @@ export interface SrsProduct {
 }
 
 export type MatchType = 'exact' | 'fuzzy' | 'partial' | 'no_match';
+export type AiVerdict = 'confirmed' | 'rejected' | 'uncertain';
 
 export interface MatchResult {
   zuper: ZuperProduct;
   srs: SrsProduct | null;
   matchType: MatchType;
   score: number;
+  aiVerdict?: AiVerdict;
+  aiReason?: string;
 }

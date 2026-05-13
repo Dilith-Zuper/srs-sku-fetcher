@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { MatchResult, MatchType } from '../types';
+import type { MatchResult, MatchType, AiVerdict } from '../types';
 import { exportResults } from '../lib/excelExporter';
 
 interface ResultsStepProps {
@@ -8,7 +8,7 @@ interface ResultsStepProps {
   onReset: () => void;
 }
 
-type Tab = 'all' | MatchType;
+type Tab = 'all' | MatchType | 'verified';
 
 const MATCH_LABEL: Record<MatchType, string> = {
   exact: 'Exact',
@@ -24,18 +24,34 @@ const MATCH_BADGE: Record<MatchType, string> = {
   no_match: 'bg-gray-100 text-gray-500',
 };
 
+const AI_BADGE: Record<AiVerdict, { cls: string; label: string; icon: string }> = {
+  confirmed: { cls: 'bg-green-50 text-green-700', label: 'AI ✓', icon: '✓' },
+  rejected:  { cls: 'bg-red-50 text-red-600',    label: 'AI ✗', icon: '✗' },
+  uncertain: { cls: 'bg-gray-100 text-gray-500',  label: 'AI ?', icon: '?' },
+};
+
 export default function ResultsStep({ results, fileName, onReset }: ResultsStepProps) {
   const [tab, setTab] = useState<Tab>('all');
   const [exporting, setExporting] = useState(false);
 
   const counts = {
-    exact: results.filter((r) => r.matchType === 'exact').length,
-    fuzzy: results.filter((r) => r.matchType === 'fuzzy').length,
-    partial: results.filter((r) => r.matchType === 'partial').length,
+    exact:    results.filter((r) => r.matchType === 'exact').length,
+    fuzzy:    results.filter((r) => r.matchType === 'fuzzy').length,
+    partial:  results.filter((r) => r.matchType === 'partial').length,
     no_match: results.filter((r) => r.matchType === 'no_match').length,
+    verified: results.filter((r) => r.aiVerdict === 'confirmed').length,
   };
 
-  const filtered = tab === 'all' ? results : results.filter((r) => r.matchType === tab);
+  const confirmed = {
+    fuzzy:   results.filter((r) => r.matchType === 'fuzzy'   && r.aiVerdict === 'confirmed').length,
+    partial: results.filter((r) => r.matchType === 'partial' && r.aiVerdict === 'confirmed').length,
+  };
+
+  const filtered = (() => {
+    if (tab === 'all')      return results;
+    if (tab === 'verified') return results.filter((r) => r.aiVerdict === 'confirmed');
+    return results.filter((r) => r.matchType === tab);
+  })();
 
   function handleExport() {
     setExporting(true);
@@ -45,18 +61,33 @@ export default function ResultsStep({ results, fileName, onReset }: ResultsStepP
   }
 
   const statCards = [
-    { label: 'Exact match', value: counts.exact, accent: 'border-green-400', text: 'text-green-600', tab: 'exact' as Tab },
-    { label: 'Fuzzy match', value: counts.fuzzy, accent: 'border-orange-400', text: 'text-orange-600', tab: 'fuzzy' as Tab },
-    { label: 'Partial match', value: counts.partial, accent: 'border-amber-400', text: 'text-amber-600', tab: 'partial' as Tab },
-    { label: 'No match', value: counts.no_match, accent: 'border-gray-300', text: 'text-gray-500', tab: 'no_match' as Tab },
+    {
+      label: 'Exact match', value: counts.exact,
+      accent: 'border-green-400', text: 'text-green-600', sub: null, tab: 'exact' as Tab,
+    },
+    {
+      label: 'Fuzzy match', value: counts.fuzzy,
+      accent: 'border-orange-400', text: 'text-orange-600',
+      sub: confirmed.fuzzy > 0 ? `${confirmed.fuzzy} AI confirmed` : null, tab: 'fuzzy' as Tab,
+    },
+    {
+      label: 'Partial match', value: counts.partial,
+      accent: 'border-amber-400', text: 'text-amber-600',
+      sub: confirmed.partial > 0 ? `${confirmed.partial} AI confirmed` : null, tab: 'partial' as Tab,
+    },
+    {
+      label: 'No match', value: counts.no_match,
+      accent: 'border-gray-300', text: 'text-gray-500', sub: null, tab: 'no_match' as Tab,
+    },
   ];
 
   const tabs: { key: Tab; label: string; count: number }[] = [
-    { key: 'all', label: 'All', count: results.length },
-    { key: 'exact', label: 'Exact', count: counts.exact },
-    { key: 'fuzzy', label: 'Fuzzy', count: counts.fuzzy },
-    { key: 'partial', label: 'Partial', count: counts.partial },
+    { key: 'all',      label: 'All',      count: results.length },
+    { key: 'exact',    label: 'Exact',    count: counts.exact },
+    { key: 'fuzzy',    label: 'Fuzzy',    count: counts.fuzzy },
+    { key: 'partial',  label: 'Partial',  count: counts.partial },
     { key: 'no_match', label: 'No Match', count: counts.no_match },
+    { key: 'verified', label: 'Verified', count: counts.verified },
   ];
 
   return (
@@ -68,8 +99,11 @@ export default function ResultsStep({ results, fileName, onReset }: ResultsStepP
           </p>
           <h1 className="text-[36px] font-extrabold text-[#1A1A1A] leading-tight">Match results</h1>
           <p className="text-sm text-gray-500 leading-relaxed mt-1">
-            {results.length.toLocaleString()} products processed from{' '}
+            {results.length.toLocaleString()} products from{' '}
             <span className="font-medium text-gray-600">{fileName}</span>
+            {counts.verified > 0 && (
+              <> · <span className="text-green-600 font-semibold">{counts.verified} AI verified</span></>
+            )}
           </p>
         </div>
         <div className="flex items-center gap-3 shrink-0 pt-8">
@@ -112,6 +146,7 @@ export default function ResultsStep({ results, fileName, onReset }: ResultsStepP
           >
             <p className={`text-3xl font-bold ${c.text}`}>{c.value.toLocaleString()}</p>
             <p className="text-xs text-gray-500 mt-1 font-medium">{c.label}</p>
+            {c.sub && <p className="text-[10px] text-green-600 font-semibold mt-0.5">{c.sub}</p>}
           </button>
         ))}
       </div>
@@ -123,14 +158,19 @@ export default function ResultsStep({ results, fileName, onReset }: ResultsStepP
               <button
                 key={t.key}
                 onClick={() => setTab(t.key)}
-                className={`px-4 py-1.5 text-sm font-semibold rounded-lg transition-all ${
-                  tab === t.key
-                    ? 'bg-white text-orange-600 shadow-sm'
-                    : 'text-gray-500 hover:text-gray-700'
-                }`}
+                className={`px-3 py-1.5 text-sm font-semibold rounded-lg transition-all ${
+                  tab === t.key ? 'bg-white text-orange-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                } ${t.key === 'verified' ? 'flex items-center gap-1' : ''}`}
               >
+                {t.key === 'verified' && (
+                  <span className="w-3 h-3 rounded-full bg-green-500 inline-flex items-center justify-center">
+                    <svg width="6" height="6" viewBox="0 0 12 10" fill="none">
+                      <path d="M1 4.5l3.5 3.5 6.5-7" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </span>
+                )}
                 {t.label}
-                <span className={`ml-1.5 text-xs ${tab === t.key ? 'text-orange-400' : 'text-gray-400'}`}>
+                <span className={`ml-1 text-xs ${tab === t.key ? 'text-orange-400' : 'text-gray-400'}`}>
                   {t.count.toLocaleString()}
                 </span>
               </button>
@@ -142,75 +182,61 @@ export default function ResultsStep({ results, fileName, onReset }: ResultsStepP
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-[#F5F3F0] border-b border-[#E5E2DC]">
-                <th className="text-left px-5 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                  Zuper product
-                </th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                  Category
-                </th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                  Brand
-                </th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                  Match
-                </th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                  SRS ID
-                </th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                  SRS product name
-                </th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                  SRS manufacturer
-                </th>
-                <th className="text-right px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                  Score
-                </th>
+                <th className="text-left px-5 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Zuper product</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Category</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Brand</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Match</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">AI</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">SRS ID</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">SRS product name</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">SRS manufacturer</th>
+                <th className="text-right px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Score</th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((r, i) => (
                 <tr
                   key={r.zuper.rowNum}
-                  className={`border-b border-[#E5E2DC] last:border-0 ${
-                    i % 2 === 1 ? 'bg-[#F5F3F0]' : 'bg-white'
-                  } ${r.matchType === 'no_match' ? 'opacity-60' : ''}`}
+                  className={`border-b border-[#E5E2DC] last:border-0 ${i % 2 === 1 ? 'bg-[#F5F3F0]' : 'bg-white'} ${r.matchType === 'no_match' ? 'opacity-50' : ''}`}
+                  title={r.aiReason}
                 >
-                  <td className="px-5 py-3 max-w-[220px]">
-                    <div>
-                      <p className="font-medium text-[#1A1A1A] truncate" title={r.zuper.productName}>
-                        {r.zuper.productName}
-                      </p>
-                      <p className="text-xs text-gray-400">{r.zuper.productId}</p>
-                    </div>
+                  <td className="px-5 py-3 max-w-[200px]">
+                    <p className="font-medium text-[#1A1A1A] truncate text-xs" title={r.zuper.productName}>{r.zuper.productName}</p>
+                    <p className="text-[10px] text-gray-400">{r.zuper.productId}</p>
                   </td>
-                  <td className="px-4 py-3 text-gray-500 text-xs max-w-[140px] truncate" title={r.zuper.productCategory}>
-                    {r.zuper.productCategory}
-                  </td>
+                  <td className="px-4 py-3 text-gray-500 text-xs max-w-[120px] truncate">{r.zuper.productCategory}</td>
                   <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">
                     {r.zuper.brand || <span className="text-gray-300">—</span>}
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap">
-                    <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${MATCH_BADGE[r.matchType]}`}>
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${MATCH_BADGE[r.matchType]}`}>
                       {MATCH_LABEL[r.matchType]}
                     </span>
+                  </td>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    {r.aiVerdict ? (
+                      <span
+                        className={`text-xs font-semibold px-2 py-0.5 rounded-full ${AI_BADGE[r.aiVerdict].cls}`}
+                        title={r.aiReason}
+                      >
+                        {AI_BADGE[r.aiVerdict].label}
+                      </span>
+                    ) : (
+                      <span className="text-gray-300 text-xs">—</span>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-xs font-mono text-gray-500 whitespace-nowrap">
                     {r.srs?.product_id ?? <span className="text-gray-300">—</span>}
                   </td>
-                  <td className="px-4 py-3 max-w-[200px]">
-                    <p className="text-xs text-gray-600 truncate" title={r.srs?.product_name}>
-                      {r.srs?.product_name ?? <span className="text-gray-300">—</span>}
-                    </p>
+                  <td className="px-4 py-3 max-w-[180px]">
+                    <p className="text-xs text-gray-600 truncate" title={r.srs?.product_name}>{r.srs?.product_name ?? <span className="text-gray-300">—</span>}</p>
                   </td>
                   <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">
                     {r.srs?.manufacturer ?? <span className="text-gray-300">—</span>}
                   </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
                     {r.matchType !== 'no_match' ? (
-                      <span className="text-xs font-semibold text-gray-500">
-                        {Math.round(r.score * 100)}%
-                      </span>
+                      <span className="text-xs font-semibold text-gray-500">{Math.round(r.score * 100)}%</span>
                     ) : (
                       <span className="text-gray-300">—</span>
                     )}
@@ -219,7 +245,6 @@ export default function ResultsStep({ results, fileName, onReset }: ResultsStepP
               ))}
             </tbody>
           </table>
-
           {filtered.length === 0 && (
             <div className="py-12 text-center text-gray-400 text-sm">No results in this category.</div>
           )}

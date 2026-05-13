@@ -8,6 +8,12 @@ const MATCH_LABELS: Record<string, string> = {
   no_match: 'No Match',
 };
 
+const AI_LABELS: Record<string, string> = {
+  confirmed: 'Confirmed',
+  rejected: 'Rejected',
+  uncertain: 'Uncertain',
+};
+
 export function exportResults(results: MatchResult[], filename = 'srs-match-results.xlsx'): void {
   const headers = [
     '#',
@@ -25,6 +31,8 @@ export function exportResults(results: MatchResult[], filename = 'srs-match-resu
     'SRS Suggested Price',
     'Match Type',
     'Match Score %',
+    'AI Verdict',
+    'AI Reason',
   ];
 
   const rows = results.map((r, i) => [
@@ -43,6 +51,8 @@ export function exportResults(results: MatchResult[], filename = 'srs-match-resu
     r.srs?.suggested_price ?? '',
     MATCH_LABELS[r.matchType],
     r.matchType !== 'no_match' ? `${Math.round(r.score * 100)}%` : '',
+    r.aiVerdict ? AI_LABELS[r.aiVerdict] : '',
+    r.aiReason ?? '',
   ]);
 
   const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
@@ -51,6 +61,7 @@ export function exportResults(results: MatchResult[], filename = 'srs-match-resu
     { wch: 4 }, { wch: 12 }, { wch: 20 }, { wch: 45 }, { wch: 22 },
     { wch: 15 }, { wch: 40 }, { wch: 12 }, { wch: 14 }, { wch: 45 },
     { wch: 22 }, { wch: 22 }, { wch: 18 }, { wch: 12 }, { wch: 12 },
+    { wch: 12 }, { wch: 60 },
   ];
 
   const wb = XLSX.utils.book_new();

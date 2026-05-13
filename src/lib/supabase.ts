@@ -18,18 +18,22 @@ export async function fetchAllSrsProducts(
 
   const total = count ?? 0;
   const pages = Math.ceil(total / PAGE_SIZE);
-  const all: SrsProduct[] = [];
+  let fetched = 0;
 
-  for (let i = 0; i < pages; i++) {
-    const { data, error } = await supabase
-      .from('srs_products')
-      .select(SELECT_FIELDS)
-      .range(i * PAGE_SIZE, (i + 1) * PAGE_SIZE - 1);
+  const pageResults = await Promise.all(
+    Array.from({ length: pages }, (_, i) =>
+      supabase
+        .from('srs_products')
+        .select(SELECT_FIELDS)
+        .range(i * PAGE_SIZE, (i + 1) * PAGE_SIZE - 1)
+        .then(({ data, error }) => {
+          if (error) throw new Error(`Page ${i} failed: ${error.message}`);
+          fetched += data?.length ?? 0;
+          onProgress(fetched, total);
+          return (data ?? []) as SrsProduct[];
+        })
+    )
+  );
 
-    if (error) throw new Error(`Supabase fetch failed: ${error.message}`);
-    if (data) all.push(...(data as SrsProduct[]));
-    onProgress(all.length, total);
-  }
-
-  return all;
+  return pageResults.flat();
 }
