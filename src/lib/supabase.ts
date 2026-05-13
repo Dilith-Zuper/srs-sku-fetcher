@@ -8,6 +8,26 @@ const supabase = createClient(
 
 const SELECT_FIELDS = 'product_id,product_name,product_category,manufacturer,manufacturer_norm,product_line,suggested_price,purchase_price';
 const PAGE_SIZE = 1000;
+const CONCURRENCY = 5;
+const MAX_RETRIES = 3;
+
+async function fetchPage(i: number): Promise<SrsProduct[]> {
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    const { data, error } = await supabase
+      .from('srs_products')
+      .select(SELECT_FIELDS)
+      .range(i * PAGE_SIZE, (i + 1) * PAGE_SIZE - 1);
+
+    if (!error) return (data ?? []) as SrsProduct[];
+
+    if (attempt < MAX_RETRIES - 1) {
+      await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+    } else {
+      throw new Error(`Page ${i} failed after ${MAX_RETRIES} attempts: ${error.message}`);
+    }
+  }
+  return [];
+}
 
 export async function fetchAllSrsProducts(
   onProgress: (fetched: number, total: number) => void
@@ -18,22 +38,20 @@ export async function fetchAllSrsProducts(
 
   const total = count ?? 0;
   const pages = Math.ceil(total / PAGE_SIZE);
+  const results: SrsProduct[][] = new Array(pages);
   let fetched = 0;
+  let pageIdx = 0;
 
-  const pageResults = await Promise.all(
-    Array.from({ length: pages }, (_, i) =>
-      supabase
-        .from('srs_products')
-        .select(SELECT_FIELDS)
-        .range(i * PAGE_SIZE, (i + 1) * PAGE_SIZE - 1)
-        .then(({ data, error }) => {
-          if (error) throw new Error(`Page ${i} failed: ${error.message}`);
-          fetched += data?.length ?? 0;
-          onProgress(fetched, total);
-          return (data ?? []) as SrsProduct[];
-        })
-    )
-  );
+  async function worker() {
+    while (pageIdx < pages) {
+      const i = pageIdx++;
+      results[i] = await fetchPage(i);
+      fetched += results[i].length;
+      onProgress(fetched, total);
+    }
+  }
 
-  return pageResults.flat();
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pages) }, worker));
+
+  return results.flat();
 }
