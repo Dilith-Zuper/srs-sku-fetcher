@@ -4,6 +4,7 @@ import Header from './components/Header';
 import UploadStep from './components/UploadStep';
 import ProcessingStep from './components/ProcessingStep';
 import ResultsStep from './components/ResultsStep';
+import GuidePanel from './components/GuidePanel';
 
 type Step = 'upload' | 'processing' | 'results';
 
@@ -13,6 +14,7 @@ export default function App() {
   const [fileName, setFileName] = useState('');
   const [results, setResults] = useState<MatchResult[]>([]);
   const [error, setError] = useState('');
+  const [guideOpen, setGuideOpen] = useState(false);
 
   const stepNum = step === 'upload' ? 1 : step === 'processing' ? 2 : 3;
 
@@ -42,7 +44,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#FAF9F7] flex flex-col">
-      <Header step={stepNum} totalSteps={3} />
+      <Header step={stepNum} totalSteps={3} onOpenGuide={() => setGuideOpen(true)} />
       <main className="flex-1 max-w-[960px] mx-auto w-full px-6 py-12">
         {error && (
           <div className="mb-6 flex items-start gap-3 bg-red-50 border border-red-200 rounded-2xl px-5 py-4">
@@ -67,6 +69,7 @@ export default function App() {
           Customer Product Management Team · Zuper Internal Tools
         </p>
       </footer>
+      <GuidePanel step={stepNum} open={guideOpen} onClose={() => setGuideOpen(false)} />
     </div>
   );
 }

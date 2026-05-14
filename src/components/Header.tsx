@@ -1,9 +1,10 @@
 interface HeaderProps {
   step: number;
   totalSteps: number;
+  onOpenGuide?: () => void;
 }
 
-export default function Header({ step, totalSteps }: HeaderProps) {
+export default function Header({ step, totalSteps, onOpenGuide }: HeaderProps) {
   const stepLabels = ['Upload', 'Processing', 'Results'];
   const currentLabel = stepLabels[step - 1] ?? '';
 
@@ -17,9 +18,19 @@ export default function Header({ step, totalSteps }: HeaderProps) {
           <span className="text-[#E5E2DC]">·</span>
           <span className="text-sm text-gray-400">{currentLabel}</span>
         </div>
-        <span className="bg-orange-50 text-orange-600 text-xs font-semibold px-3 py-1.5 rounded-full">
-          Step {step} of {totalSteps}
-        </span>
+        <div className="flex items-center gap-4">
+          {onOpenGuide && (
+            <button
+              onClick={onOpenGuide}
+              className="text-xs font-medium text-gray-400 hover:text-orange-500 transition-colors underline underline-offset-2"
+            >
+              Need help?
+            </button>
+          )}
+          <span className="bg-orange-50 text-orange-600 text-xs font-semibold px-3 py-1.5 rounded-full">
+            Step {step} of {totalSteps}
+          </span>
+        </div>
       </div>
     </header>
   );
