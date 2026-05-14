@@ -74,37 +74,71 @@ export function countServices(products: ZuperProduct[]): number {
   return products.filter(isService).length;
 }
 
-export async function matchProductsBatch(zuper: ZuperProduct[]): Promise<MatchResult[]> {
+async function runRpcBatches(
+  parts: ZuperProduct[],
+  onProgress?: (done: number, total: number) => void
+): Promise<Map<number, DbRow[]>> {
+  const grouped = new Map<number, DbRow[]>();
+  const batches: { offset: number; items: ZuperProduct[] }[] = [];
+  for (let i = 0; i < parts.length; i += MATCHING.RPC_BATCH_SIZE) {
+    batches.push({ offset: i, items: parts.slice(i, i + MATCHING.RPC_BATCH_SIZE) });
+  }
+
+  let done = 0;
+  const tasks = batches.map((b, batchIdx) => async () => {
+    const names        = b.items.map(z => stripBrandSuffix(z.productName, z.brand));
+    const brands       = b.items.map(z => z.brand ?? '');
+    const descriptions = b.items.map(z => z.productDescription ?? '');
+
+    const { data, error } = await supabase.rpc('match_srs_products_batch', {
+      p_names:        names,
+      p_brands:       brands,
+      p_descriptions: descriptions,
+    });
+
+    if (error) throw new Error(`RPC batch ${batchIdx + 1}/${batches.length} failed: ${error.message}`);
+
+    for (const r of (data as DbRow[])) {
+      // input_idx is 1-based within the batch; translate to global parts[] index
+      const globalIdx = b.offset + (r.input_idx - 1);
+      const arr = grouped.get(globalIdx) ?? [];
+      arr.push(r);
+      grouped.set(globalIdx, arr);
+    }
+
+    done += b.items.length;
+    onProgress?.(done, parts.length);
+  });
+
+  // Sequential workers, RPC_BATCH_CONCURRENCY at a time
+  let workerIdx = 0;
+  async function worker() {
+    while (workerIdx < tasks.length) {
+      const i = workerIdx++;
+      await tasks[i]();
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(MATCHING.RPC_BATCH_CONCURRENCY, tasks.length) }, worker));
+
+  for (const arr of grouped.values()) arr.sort((a, b) => a.rank - b.rank);
+  return grouped;
+}
+
+export async function matchProductsBatch(
+  zuper: ZuperProduct[],
+  onProgress?: (done: number, total: number) => void
+): Promise<MatchResult[]> {
   const parts    = zuper.filter(z => !isService(z));
   const services = zuper.filter(z => isService(z));
 
   if (parts.length === 0) {
+    onProgress?.(0, 0);
     return services.map(z => ({
       zuper: z, srs: null, alternatives: [], matchType: 'service', score: 0,
     }));
   }
 
-  const names        = parts.map(z => stripBrandSuffix(z.productName, z.brand));
-  const brands       = parts.map(z => z.brand ?? '');
-  const descriptions = parts.map(z => z.productDescription ?? '');
-
-  const { data, error } = await supabase.rpc('match_srs_products_batch', {
-    p_names:        names,
-    p_brands:       brands,
-    p_descriptions: descriptions,
-  });
-
-  if (error) throw new Error(`RPC failed: ${error.message}`);
-
-  // Group rows by input_idx, sorted by rank ascending
-  const grouped = new Map<number, DbRow[]>();
-  for (const r of (data as DbRow[])) {
-    const i = r.input_idx - 1;
-    const arr = grouped.get(i) ?? [];
-    arr.push(r);
-    grouped.set(i, arr);
-  }
-  for (const arr of grouped.values()) arr.sort((a, b) => a.rank - b.rank);
+  const grouped = await runRpcBatches(parts, onProgress);
 
   const partResults: MatchResult[] = parts.map((z, i) => {
     const rows = grouped.get(i) ?? [];

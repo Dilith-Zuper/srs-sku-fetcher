@@ -7,6 +7,10 @@ export const MATCHING = {
   // SQL function returns up to this many candidates per input
   SQL_TOP_K:       3,
 
+  // Client-side RPC batching (avoid Supabase statement timeout)
+  RPC_BATCH_SIZE:        50,
+  RPC_BATCH_CONCURRENCY: 2,
+
   // AI verification
   AI_BATCH_SIZE:           20,
   AI_BATCH_CONCURRENCY:    3,

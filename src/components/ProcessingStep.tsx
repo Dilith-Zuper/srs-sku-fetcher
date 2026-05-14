@@ -19,6 +19,7 @@ type Phase = 'matching' | 'verifying' | 'done';
 export default function ProcessingStep({ products, onDone, onError }: ProcessingStepProps) {
   const [phase, setPhase] = useState<Phase>('matching');
   const [matchDone, setMatchDone] = useState(false);
+  const [matchProgress, setMatchProgress] = useState({ done: 0, total: 0 });
   const [verifyProgress, setVerifyProgress] = useState({ done: 0, total: 0 });
   const [log, setLog] = useState<LogLine[]>([{ text: `Sending ${products.length} products to database…`, type: 'info' }]);
   const logRef = useRef<HTMLDivElement>(null);
@@ -34,9 +35,11 @@ export default function ProcessingStep({ products, onDone, onError }: Processing
 
     (async () => {
       try {
-        // Phase 1: SQL matching — single RPC call
+        // Phase 1: SQL matching — chunked RPC calls
         const t0 = Date.now();
-        let matched = await matchProductsBatch(products);
+        let matched = await matchProductsBatch(products, (done, total) => {
+          setMatchProgress({ done, total });
+        });
         const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
         setMatchDone(true);
 
@@ -77,7 +80,11 @@ export default function ProcessingStep({ products, onDone, onError }: Processing
   }, [log]);
 
   const totalProgress = (() => {
-    if (!matchDone) return 8;
+    if (!matchDone) {
+      return matchProgress.total > 0
+        ? Math.round((matchProgress.done / matchProgress.total) * 50)
+        : 4;
+    }
     if (phase === 'verifying') {
       return 50 + (verifyProgress.total > 0
         ? Math.round((verifyProgress.done / verifyProgress.total) * 50)
@@ -106,7 +113,9 @@ export default function ProcessingStep({ products, onDone, onError }: Processing
       label: 'SQL matching',
       detail: matchDone
         ? `${products.length.toLocaleString()} products matched`
-        : `Querying database for ${products.length.toLocaleString()} products…`,
+        : matchProgress.total > 0
+          ? `${matchProgress.done.toLocaleString()} / ${matchProgress.total.toLocaleString()} products`
+          : `Querying database…`,
     },
     {
       key: 'verifying' as Phase,
