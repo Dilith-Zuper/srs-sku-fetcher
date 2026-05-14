@@ -33,8 +33,8 @@ RETURNS TABLE(
   manufacturer_norm   TEXT,
   product_line        TEXT,
   product_description TEXT,
-  product_uom         TEXT[],
-  product_options     TEXT[],
+  product_uom         JSONB,
+  product_options     JSONB,
   suggested_price     NUMERIC,
   purchase_price      NUMERIC,
   score               FLOAT
