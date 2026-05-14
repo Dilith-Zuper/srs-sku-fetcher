@@ -10,22 +10,23 @@ function buildPrompt(r: MatchResult): string {
   const { zuper, srs } = r;
   return `You are verifying whether two product catalog entries refer to the same physical product.
 
+Focus on product name and description as the primary signals, then brand/manufacturer and product line as supporting signals. Ignore category — the two systems use different category taxonomies.
+
 ZUPER PRODUCT:
 - Name: ${zuper.productName}
-- Brand: ${zuper.brand || 'not specified'}
-- Category: ${zuper.productCategory}
 - Description: ${zuper.productDescription || 'not provided'}
+- Brand: ${zuper.brand || 'not specified'}
 
 SRS CATALOG ENTRY:
 - Name: ${srs!.product_name}
+- Description: ${srs!.product_description || 'not provided'}
 - Manufacturer: ${srs!.manufacturer}
-- Category: ${srs!.product_category}
 - Product Line: ${srs!.product_line || 'not specified'}
 
 RULES:
 - Compare ONLY the information explicitly provided above
 - Do NOT assume, infer, or fabricate any product details not given
-- Answer YES only if you are highly confident they are the same product
+- Answer YES only if name and/or description clearly indicate the same product
 - When in doubt, answer UNCERTAIN — this is always safer than a wrong YES
 - Answer NO only if you can clearly identify they are different products
 
