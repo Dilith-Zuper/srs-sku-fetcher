@@ -6,64 +6,61 @@ const client = new Anthropic({
   dangerouslyAllowBrowser: true,
 });
 
-function buildPrompt(r: MatchResult): string {
-  const { zuper, srs } = r;
-  return `You are verifying whether two product catalog entries refer to the same physical product.
+const BATCH_SIZE = 20;
 
-Focus on product name and description as the primary signals, then brand/manufacturer and product line as supporting signals. Ignore category — the two systems use different category taxonomies.
+function buildBatchPrompt(matches: MatchResult[]): string {
+  const items = matches.map((r, i) => {
+    const { zuper, srs } = r;
+    return `[${i + 1}]
+Zuper — Name: ${zuper.productName} | Brand: ${zuper.brand || 'not specified'} | Description: ${zuper.productDescription || 'not provided'}
+SRS   — Name: ${srs!.product_name} | Manufacturer: ${srs!.manufacturer} | Description: ${srs!.product_description || 'not provided'} | Product Line: ${srs!.product_line || 'not specified'}`;
+  }).join('\n\n');
 
-ZUPER PRODUCT:
-- Name: ${zuper.productName}
-- Description: ${zuper.productDescription || 'not provided'}
-- Brand: ${zuper.brand || 'not specified'}
+  return `You are verifying whether product catalog entries refer to the same physical product.
 
-SRS CATALOG ENTRY:
-- Name: ${srs!.product_name}
-- Description: ${srs!.product_description || 'not provided'}
-- Manufacturer: ${srs!.manufacturer}
-- Product Line: ${srs!.product_line || 'not specified'}
+Focus on product name and description as primary signals, then brand/manufacturer and product line. Ignore category — the two systems use different taxonomies.
+
+For each numbered pair below, decide:
+- YES — highly confident they are the same product (name and/or description clearly match)
+- NO — clearly different products
+- UNCERTAIN — not enough evidence; when in doubt always prefer this over a wrong YES
 
 RULES:
-- Compare ONLY the information explicitly provided above
-- Do NOT assume, infer, or fabricate any product details not given
-- Answer YES only if name and/or description clearly indicate the same product
-- When in doubt, answer UNCERTAIN — this is always safer than a wrong YES
-- Answer NO only if you can clearly identify they are different products
+- Compare ONLY the information explicitly provided
+- Do NOT assume, infer, or fabricate any product details
+- UNCERTAIN is always safer than a wrong YES or NO
 
-Respond with valid JSON only, no other text:
-{"verdict": "YES" | "NO" | "UNCERTAIN", "reason": "one sentence citing only the data above"}`;
+${items}
+
+Respond with a JSON array only, no other text:
+[{"id": 1, "verdict": "YES" | "NO" | "UNCERTAIN", "reason": "one sentence citing only the data above"}, ...]`;
 }
 
-async function runWithConcurrency<T>(
-  tasks: (() => Promise<T>)[],
-  limit: number
-): Promise<T[]> {
-  const results: T[] = new Array(tasks.length);
-  let idx = 0;
-  async function worker() {
-    while (idx < tasks.length) {
-      const i = idx++;
-      results[i] = await tasks[i]();
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
-  return results;
-}
+interface BatchVerdictRow { id: number; verdict: string; reason: string; }
 
-async function verifySingle(r: MatchResult): Promise<{ verdict: AiVerdict; reason: string }> {
+async function verifyBatch(
+  matches: MatchResult[]
+): Promise<{ verdict: AiVerdict; reason: string }[]> {
+  const fallback = matches.map(() => ({ verdict: 'uncertain' as AiVerdict, reason: 'Verification unavailable' }));
   try {
     const msg = await client.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 150,
-      messages: [{ role: 'user', content: buildPrompt(r) }],
+      max_tokens: BATCH_SIZE * 60,
+      messages: [{ role: 'user', content: buildBatchPrompt(matches) }],
     });
+
     const text = msg.content[0].type === 'text' ? msg.content[0].text.trim() : '';
-    const parsed = JSON.parse(text) as { verdict: string; reason: string };
-    const v = parsed.verdict.toUpperCase();
-    const verdict: AiVerdict = v === 'YES' ? 'confirmed' : v === 'NO' ? 'rejected' : 'uncertain';
-    return { verdict, reason: String(parsed.reason ?? '') };
+    const rows = JSON.parse(text) as BatchVerdictRow[];
+
+    return matches.map((_, i) => {
+      const row = rows.find(r => r.id === i + 1);
+      if (!row) return { verdict: 'uncertain' as AiVerdict, reason: 'No response for this item' };
+      const v = row.verdict.toUpperCase();
+      const verdict: AiVerdict = v === 'YES' ? 'confirmed' : v === 'NO' ? 'rejected' : 'uncertain';
+      return { verdict, reason: String(row.reason ?? '') };
+    });
   } catch {
-    return { verdict: 'uncertain', reason: 'Verification unavailable' };
+    return fallback;
   }
 }
 
@@ -81,26 +78,30 @@ export async function verifyMatches(
     return results;
   }
 
-  let done = 0;
-  const tasks = toVerify.map(({ r, i }) => async () => {
-    const { verdict, reason } = await verifySingle(r);
-    onProgress(++done, total);
-
-    const updated: MatchResult = { ...r, aiVerdict: verdict, aiReason: reason };
-    if (verdict === 'rejected') {
-      updated.matchType = 'no_match';
-      updated.srs = null;
-    } else if (verdict === 'confirmed' && r.matchType === 'partial') {
-      updated.matchType = 'fuzzy';
-    }
-    return { index: i, updated };
-  });
-
-  const updates = await runWithConcurrency(tasks, 8);
-
   const output = [...results];
-  for (const { index, updated } of updates) {
-    output[index] = updated;
+  let done = 0;
+
+  for (let start = 0; start < toVerify.length; start += BATCH_SIZE) {
+    const batch = toVerify.slice(start, start + BATCH_SIZE);
+    const verdicts = await verifyBatch(batch.map(({ r }) => r));
+
+    for (let j = 0; j < batch.length; j++) {
+      const { r, i } = batch[j];
+      const { verdict, reason } = verdicts[j];
+      const updated: MatchResult = { ...r, aiVerdict: verdict, aiReason: reason };
+
+      if (verdict === 'rejected') {
+        updated.matchType = 'no_match';
+        updated.srs = null;
+      } else if (verdict === 'confirmed' && r.matchType === 'partial') {
+        updated.matchType = 'fuzzy';
+      }
+      output[i] = updated;
+    }
+
+    done += batch.length;
+    onProgress(done, total);
   }
+
   return output;
 }
