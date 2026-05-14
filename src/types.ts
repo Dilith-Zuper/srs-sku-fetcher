@@ -22,7 +22,7 @@ export interface SrsProduct {
   purchase_price: number | null;
 }
 
-export type MatchType = 'exact' | 'fuzzy' | 'partial' | 'no_match';
+export type MatchType = 'exact' | 'fuzzy' | 'partial' | 'no_match' | 'service';
 export type AiVerdict = 'confirmed' | 'rejected' | 'uncertain';
 
 export interface MatchResult {

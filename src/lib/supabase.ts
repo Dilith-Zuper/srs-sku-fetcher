@@ -49,10 +49,23 @@ function rowToSrsProduct(row: DbRow): SrsProduct {
   };
 }
 
+function isService(z: ZuperProduct): boolean {
+  const t = z.productType.toUpperCase();
+  return t.includes('SERVICE') || t === 'LABOR';
+}
+
 export async function matchProductsBatch(zuper: ZuperProduct[]): Promise<MatchResult[]> {
-  const names        = zuper.map(z => stripBrandSuffix(z.productName, z.brand));
-  const brands       = zuper.map(z => z.brand ?? '');
-  const descriptions = zuper.map(z => z.productDescription ?? '');
+  const parts    = zuper.filter(z => !isService(z));
+  const services = zuper.filter(z => isService(z));
+
+  // Short-circuit: no parts to match
+  if (parts.length === 0) {
+    return services.map(z => ({ zuper: z, srs: null, matchType: 'service', score: 0 }));
+  }
+
+  const names        = parts.map(z => stripBrandSuffix(z.productName, z.brand));
+  const brands       = parts.map(z => z.brand ?? '');
+  const descriptions = parts.map(z => z.productDescription ?? '');
 
   const { data, error } = await supabase.rpc('match_srs_products_batch', {
     p_names:        names,
@@ -66,7 +79,7 @@ export async function matchProductsBatch(zuper: ZuperProduct[]): Promise<MatchRe
     (data as DbRow[]).map(r => [r.input_idx - 1, r])  // WITH ORDINALITY is 1-based
   );
 
-  return zuper.map((z, i) => {
+  const partResults: MatchResult[] = parts.map((z, i) => {
     const row = byIdx.get(i);
     if (!row || row.score < 0.30) {
       return { zuper: z, srs: null, matchType: 'no_match', score: 0 };
@@ -76,4 +89,15 @@ export async function matchProductsBatch(zuper: ZuperProduct[]): Promise<MatchRe
       row.score >= 0.52 ? 'fuzzy' : 'partial';
     return { zuper: z, srs: rowToSrsProduct(row), matchType, score: row.score };
   });
+
+  const serviceResults: MatchResult[] = services.map(z => ({
+    zuper: z, srs: null, matchType: 'service', score: 0,
+  }));
+
+  // Restore original order
+  const resultMap = new Map<number, MatchResult>();
+  for (const r of [...partResults, ...serviceResults]) {
+    resultMap.set(r.zuper.rowNum, r);
+  }
+  return zuper.map(z => resultMap.get(z.rowNum)!);
 }

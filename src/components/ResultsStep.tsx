@@ -8,13 +8,14 @@ interface ResultsStepProps {
   onReset: () => void;
 }
 
-type Tab = 'all' | MatchType | 'verified';
+type Tab = 'all' | MatchType | 'verified' | 'service';
 
 const MATCH_LABEL: Record<MatchType, string> = {
   exact: 'Exact',
   fuzzy: 'Fuzzy',
   partial: 'Partial',
   no_match: 'No Match',
+  service: 'Service',
 };
 
 const MATCH_BADGE: Record<MatchType, string> = {
@@ -22,6 +23,7 @@ const MATCH_BADGE: Record<MatchType, string> = {
   fuzzy: 'bg-orange-50 text-orange-600',
   partial: 'bg-amber-50 text-amber-700',
   no_match: 'bg-gray-100 text-gray-500',
+  service: 'bg-blue-50 text-blue-600',
 };
 
 const AI_BADGE: Record<AiVerdict, { cls: string; label: string; icon: string }> = {
@@ -39,6 +41,7 @@ export default function ResultsStep({ results, fileName, onReset }: ResultsStepP
     fuzzy:    results.filter((r) => r.matchType === 'fuzzy').length,
     partial:  results.filter((r) => r.matchType === 'partial').length,
     no_match: results.filter((r) => r.matchType === 'no_match').length,
+    service:  results.filter((r) => r.matchType === 'service').length,
     verified: results.filter((r) => r.aiVerdict === 'confirmed').length,
   };
 
@@ -50,6 +53,7 @@ export default function ResultsStep({ results, fileName, onReset }: ResultsStepP
   const filtered = (() => {
     if (tab === 'all')      return results;
     if (tab === 'verified') return results.filter((r) => r.aiVerdict === 'confirmed');
+    if (tab === 'service')  return results.filter((r) => r.matchType === 'service');
     return results.filter((r) => r.matchType === tab);
   })();
 
@@ -79,6 +83,10 @@ export default function ResultsStep({ results, fileName, onReset }: ResultsStepP
       label: 'No match', value: counts.no_match,
       accent: 'border-gray-300', text: 'text-gray-500', sub: null, tab: 'no_match' as Tab,
     },
+    {
+      label: 'Services (skipped)', value: counts.service,
+      accent: 'border-blue-300', text: 'text-blue-500', sub: null, tab: 'service' as Tab,
+    },
   ];
 
   const tabs: { key: Tab; label: string; count: number }[] = [
@@ -87,6 +95,7 @@ export default function ResultsStep({ results, fileName, onReset }: ResultsStepP
     { key: 'fuzzy',    label: 'Fuzzy',    count: counts.fuzzy },
     { key: 'partial',  label: 'Partial',  count: counts.partial },
     { key: 'no_match', label: 'No Match', count: counts.no_match },
+    { key: 'service',  label: 'Services', count: counts.service },
     { key: 'verified', label: 'Verified', count: counts.verified },
   ];
 

@@ -73,7 +73,7 @@ export async function verifyMatches(
 ): Promise<MatchResult[]> {
   const toVerify = results
     .map((r, i) => ({ r, i }))
-    .filter(({ r }) => r.matchType === 'fuzzy' || r.matchType === 'partial');
+    .filter(({ r }) => r.matchType === 'fuzzy' || r.matchType === 'partial');  // services and no_match skipped
 
   const total = toVerify.length;
   if (total === 0) {

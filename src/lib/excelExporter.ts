@@ -6,6 +6,7 @@ const MATCH_LABELS: Record<string, string> = {
   fuzzy: 'Fuzzy',
   partial: 'Partial',
   no_match: 'No Match',
+  service: 'Service — skipped',
 };
 
 const AI_LABELS: Record<string, string> = {

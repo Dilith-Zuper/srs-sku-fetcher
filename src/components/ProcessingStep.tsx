@@ -40,11 +40,13 @@ export default function ProcessingStep({ products, onDone, onError }: Processing
         const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
         setMatchDone(true);
 
-        const exact   = matched.filter(r => r.matchType === 'exact').length;
-        const fuzzy   = matched.filter(r => r.matchType === 'fuzzy').length;
-        const partial = matched.filter(r => r.matchType === 'partial').length;
-        const none    = matched.filter(r => r.matchType === 'no_match').length;
-        addLog(`SQL match done in ${elapsed}s — ${exact} exact, ${fuzzy} fuzzy, ${partial} partial, ${none} unmatched`, 'success');
+        const exact    = matched.filter(r => r.matchType === 'exact').length;
+        const fuzzy    = matched.filter(r => r.matchType === 'fuzzy').length;
+        const partial  = matched.filter(r => r.matchType === 'partial').length;
+        const none     = matched.filter(r => r.matchType === 'no_match').length;
+        const services = matched.filter(r => r.matchType === 'service').length;
+        const skipped  = services > 0 ? `, ${services} services skipped` : '';
+        addLog(`SQL match done in ${elapsed}s — ${exact} exact, ${fuzzy} fuzzy, ${partial} partial, ${none} unmatched${skipped}`, 'success');
 
         // Phase 2: AI verification
         const toVerify = fuzzy + partial;
