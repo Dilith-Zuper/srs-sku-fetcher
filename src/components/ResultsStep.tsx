@@ -90,8 +90,7 @@ export default function ResultsStep({ results: initial, fileName, onReset }: Res
 
   async function handleExport() {
     setExporting(true);
-    const base = fileName.replace(/\.[^/.]+$/, '');
-    await exportResults(results, `${base}-srs-matches.xlsx`);
+    await exportResults(results, fileName);
     setTimeout(() => setExporting(false), 1000);
   }
 
