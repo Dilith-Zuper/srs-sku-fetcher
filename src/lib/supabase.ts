@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import type { ZuperProduct, SrsProduct, MatchResult, MatchType } from '../types';
+import { MATCHING, isServiceType } from './config';
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL as string,
@@ -10,19 +11,31 @@ function norm(s: string): string {
   return s.toLowerCase().trim().replace(/\s+/g, ' ');
 }
 
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function stripBrandSuffix(name: string, brand: string): string {
   if (!brand) return name;
-  const suffix = ` | ${brand}`;
-  if (name.endsWith(suffix)) return name.slice(0, -suffix.length).trim();
-  const parts = name.split(' | ');
+  const b = escapeRe(brand.trim());
+  let s = name;
+  // " | Brand" / " - Brand" / " : Brand" at end
+  s = s.replace(new RegExp(`\\s*[|\\-:]\\s*${b}\\s*$`, 'i'), '');
+  // "Brand | " / "Brand - " / "Brand: " at start
+  s = s.replace(new RegExp(`^\\s*${b}\\s*[|\\-:]\\s*`, 'i'), '');
+  // "(Brand)" anywhere
+  s = s.replace(new RegExp(`\\s*\\(${b}\\)\\s*`, 'i'), ' ');
+  // Fallback: pipe-split last segment matches brand
+  const parts = s.split(' | ');
   if (parts.length > 1 && norm(parts[parts.length - 1]) === norm(brand)) {
-    return parts.slice(0, -1).join(' | ').trim();
+    s = parts.slice(0, -1).join(' | ');
   }
-  return name;
+  return s.trim().replace(/\s+/g, ' ');
 }
 
 interface DbRow {
   input_idx: number;
+  rank: number;
   product_id: number;
   product_name: string;
   product_category: string;
@@ -30,6 +43,8 @@ interface DbRow {
   manufacturer_norm: string;
   product_line: string | null;
   product_description: string | null;
+  product_uom: string[] | null;
+  product_options: string[] | null;
   suggested_price: number | null;
   purchase_price: number | null;
   score: number;
@@ -37,30 +52,36 @@ interface DbRow {
 
 function rowToSrsProduct(row: DbRow): SrsProduct {
   return {
-    product_id: row.product_id,
-    product_name: row.product_name,
-    product_category: row.product_category,
-    manufacturer: row.manufacturer,
-    manufacturer_norm: row.manufacturer_norm,
-    product_line: row.product_line,
+    product_id:          row.product_id,
+    product_name:        row.product_name,
+    product_category:    row.product_category,
+    manufacturer:        row.manufacturer,
+    manufacturer_norm:   row.manufacturer_norm,
+    product_line:        row.product_line,
     product_description: row.product_description,
-    suggested_price: row.suggested_price,
-    purchase_price: row.purchase_price,
+    product_uom:         row.product_uom,
+    product_options:     row.product_options,
+    suggested_price:     row.suggested_price,
+    purchase_price:      row.purchase_price,
   };
 }
 
 function isService(z: ZuperProduct): boolean {
-  const t = z.productType.toUpperCase();
-  return t.includes('SERVICE') || t === 'LABOR';
+  return isServiceType(z.productType);
+}
+
+export function countServices(products: ZuperProduct[]): number {
+  return products.filter(isService).length;
 }
 
 export async function matchProductsBatch(zuper: ZuperProduct[]): Promise<MatchResult[]> {
   const parts    = zuper.filter(z => !isService(z));
   const services = zuper.filter(z => isService(z));
 
-  // Short-circuit: no parts to match
   if (parts.length === 0) {
-    return services.map(z => ({ zuper: z, srs: null, matchType: 'service', score: 0 }));
+    return services.map(z => ({
+      zuper: z, srs: null, alternatives: [], matchType: 'service', score: 0,
+    }));
   }
 
   const names        = parts.map(z => stripBrandSuffix(z.productName, z.brand));
@@ -75,23 +96,36 @@ export async function matchProductsBatch(zuper: ZuperProduct[]): Promise<MatchRe
 
   if (error) throw new Error(`RPC failed: ${error.message}`);
 
-  const byIdx = new Map<number, DbRow>(
-    (data as DbRow[]).map(r => [r.input_idx - 1, r])  // WITH ORDINALITY is 1-based
-  );
+  // Group rows by input_idx, sorted by rank ascending
+  const grouped = new Map<number, DbRow[]>();
+  for (const r of (data as DbRow[])) {
+    const i = r.input_idx - 1;
+    const arr = grouped.get(i) ?? [];
+    arr.push(r);
+    grouped.set(i, arr);
+  }
+  for (const arr of grouped.values()) arr.sort((a, b) => a.rank - b.rank);
 
   const partResults: MatchResult[] = parts.map((z, i) => {
-    const row = byIdx.get(i);
-    if (!row || row.score < 0.30) {
-      return { zuper: z, srs: null, matchType: 'no_match', score: 0 };
+    const rows = grouped.get(i) ?? [];
+    const top = rows[0];
+    if (!top || top.score < MATCHING.SCORE_NO_MATCH) {
+      return { zuper: z, srs: null, alternatives: [], matchType: 'no_match', score: 0 };
     }
     const matchType: MatchType =
-      row.score >= 0.90 ? 'exact' :
-      row.score >= 0.52 ? 'fuzzy' : 'partial';
-    return { zuper: z, srs: rowToSrsProduct(row), matchType, score: row.score };
+      top.score >= MATCHING.SCORE_EXACT ? 'exact' :
+      top.score >= MATCHING.SCORE_FUZZY ? 'fuzzy' : 'partial';
+    return {
+      zuper:        z,
+      srs:          rowToSrsProduct(top),
+      alternatives: rows.slice(1).map(rowToSrsProduct),
+      matchType,
+      score:        top.score,
+    };
   });
 
   const serviceResults: MatchResult[] = services.map(z => ({
-    zuper: z, srs: null, matchType: 'service', score: 0,
+    zuper: z, srs: null, alternatives: [], matchType: 'service', score: 0,
   }));
 
   // Restore original order
